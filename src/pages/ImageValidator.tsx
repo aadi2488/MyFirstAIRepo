@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import { detectShapes, parseRules, validateRules, type DetectedShape, type RuleResult, type ShapeKind } from "../utils/shapeDetection";
 
 const SHAPE_COLORS: Record<string, string> = {
@@ -30,7 +30,7 @@ export default function ImageValidator() {
   const [analyzing, setAnalyzing] = useState(false);
   const [summary, setSummary] = useState<string>("");
 
-  const runAnalysis = (url: string) => {
+  const runAnalysis = useCallback((url: string) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
@@ -41,7 +41,6 @@ export default function ImageValidator() {
 
     const img = new Image();
     img.onload = () => {
-      // Scale down large images for performance
       const maxDim = 1200;
       let w = img.width;
       let h = img.height;
@@ -70,7 +69,6 @@ export default function ImageValidator() {
         ctx.fillText(s.kind, x + 2, y - 4);
       }
 
-      // Build summary
       if (detected.length === 0) {
         setSummary("No shapes detected. Try an image with clear shapes on a plain background.");
       } else {
@@ -88,19 +86,28 @@ export default function ImageValidator() {
       setAnalyzing(false);
     };
     img.src = url;
-  };
+  }, []);
+
+  // Run analysis whenever a new image is loaded (canvas is guaranteed to exist)
+  useEffect(() => {
+    if (imageUrl) {
+      // Small delay to ensure canvas is rendered
+      const id = setTimeout(() => runAnalysis(imageUrl), 50);
+      return () => clearTimeout(id);
+    }
+  }, [imageUrl, runAnalysis]);
 
   const handleImage = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setResults(null);
     setShapes([]);
+    setSummary("");
+    setImageUrl(null);
 
     const reader = new FileReader();
     reader.onload = () => {
-      const url = reader.result as string;
-      setImageUrl(url);
-      runAnalysis(url);
+      setImageUrl(reader.result as string);
     };
     reader.readAsDataURL(file);
   };
