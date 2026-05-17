@@ -1,17 +1,24 @@
 import { useState } from "react";
-import { useTeamMembers } from "../context/TeamMembersContext";
+import { useTeamMembers, type Member } from "../context/TeamMembersContext";
 
 export default function TeamMembers() {
-  const { members, addMember, removeMember } = useTeamMembers();
+  const { members, addMember, removeMember, updateMember } = useTeamMembers();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [github, setGithub] = useState("");
 
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim() || !email.trim()) return;
-    addMember(name.trim(), email.trim());
+    addMember(name.trim(), email.trim(), github.trim() || undefined);
     setName("");
     setEmail("");
+    setGithub("");
+  };
+
+  const handleGithubChange = (index: number, value: string) => {
+    const m = { ...members[index], github: value || undefined };
+    updateMember(index, m);
   };
 
   return (
@@ -30,6 +37,11 @@ export default function TeamMembers() {
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
+        <input
+          placeholder="GitHub (optional)"
+          value={github}
+          onChange={(e) => setGithub(e.target.value)}
+        />
         <button type="submit">Add Member</button>
       </form>
 
@@ -42,6 +54,12 @@ export default function TeamMembers() {
               <div>
                 <span className="member-name">{m.name}</span>
                 <span className="member-email">{m.email}</span>
+                <input
+                  className="member-github"
+                  placeholder="GitHub username"
+                  value={m.github || ""}
+                  onChange={(e) => handleGithubChange(i, e.target.value)}
+                />
               </div>
               <button className="remove-btn" onClick={() => removeMember(i)}>
                 Remove

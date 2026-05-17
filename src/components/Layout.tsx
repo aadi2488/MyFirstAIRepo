@@ -19,6 +19,8 @@ export default function Layout() {
           <NavLink to="/dashboard" end>Dashboard</NavLink>
           <NavLink to="/dashboard/team-members">Team Members</NavLink>
           <NavLink to="/dashboard/send-email">Send Email</NavLink>
+          <NavLink to="/dashboard/github-repos">GitHub Repos</NavLink>
+          <NavLink to="/dashboard/image-validator">Shape Validator</NavLink>
         </nav>
       </aside>
 

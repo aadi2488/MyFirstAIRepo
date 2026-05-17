@@ -5,12 +5,14 @@ const STORAGE_KEY = "team-members";
 export interface Member {
   name: string;
   email: string;
+  github?: string;
 }
 
 interface TeamMembersContextType {
   members: Member[];
-  addMember: (name: string, email: string) => void;
+  addMember: (name: string, email: string, github?: string) => void;
   removeMember: (index: number) => void;
+  updateMember: (index: number, member: Member) => void;
 }
 
 const TeamMembersContext = createContext<TeamMembersContextType | null>(null);
@@ -35,16 +37,20 @@ export function TeamMembersProvider({ children }: { children: ReactNode }) {
     saveMembers(members);
   }, [members]);
 
-  const addMember = (name: string, email: string) => {
-    setMembers([...members, { name, email }]);
+  const addMember = (name: string, email: string, github?: string) => {
+    setMembers([...members, { name, email, github: github || undefined }]);
   };
 
   const removeMember = (index: number) => {
     setMembers(members.filter((_, i) => i !== index));
   };
 
+  const updateMember = (index: number, member: Member) => {
+    setMembers(members.map((m, i) => (i === index ? member : m)));
+  };
+
   return (
-    <TeamMembersContext.Provider value={{ members, addMember, removeMember }}>
+    <TeamMembersContext.Provider value={{ members, addMember, removeMember, updateMember }}>
       {children}
     </TeamMembersContext.Provider>
   );
