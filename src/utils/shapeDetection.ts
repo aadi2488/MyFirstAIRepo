@@ -15,39 +15,58 @@ function grayscale(data: Uint8ClampedArray): number[] {
   return gray;
 }
 
-function gaussianBlur(gray: number[], width: number, height: number): number[] {
-  const kernel = [
-    [1, 2, 1],
-    [2, 4, 2],
-    [1, 2, 1],
-  ];
-  const kSum = 16;
-  const result: number[] = [];
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let sum = 0;
-      for (let ky = -1; ky <= 1; ky++) {
-        for (let kx = -1; kx <= 1; kx++) {
-          const px = Math.min(width - 1, Math.max(0, x + kx));
-          const py = Math.min(height - 1, Math.max(0, y + ky));
-          sum += gray[py * width + px] * kernel[ky + 1][kx + 1];
-        }
-      }
-      result.push(sum / kSum);
+function otsuThreshold(gray: number[]): number {
+  const hist = new Int32Array(256);
+  for (const v of gray) hist[Math.round(v)]++;
+
+  const total = gray.length;
+  let sum = 0;
+  for (let i = 0; i < 256; i++) sum += i * hist[i];
+
+  let sumB = 0, wB = 0, maxV = 0, best = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const between = wB * wF * (mB - mF) * (mB - mF);
+    if (between > maxV) {
+      maxV = between;
+      best = t;
     }
   }
-  return result;
+  return best;
 }
 
-function threshold(gray: number[], threshold: number): Uint8Array {
+function threshold(gray: number[]): Uint8Array {
+  const t = otsuThreshold(gray);
   const bin = new Uint8Array(gray.length);
+
+  // Count which side of threshold has fewer pixels (likely the shapes)
+  let darker = 0;
   for (let i = 0; i < gray.length; i++) {
-    bin[i] = gray[i] > threshold ? 255 : 0;
+    if (gray[i] <= t) darker++;
+  }
+  // Invert if the "foreground" (shapes) are darker than background
+  const invert = darker < gray.length / 2;
+
+  for (let i = 0; i < gray.length; i++) {
+    const above = gray[i] > t;
+    bin[i] = (invert ? !above : above) ? 255 : 0;
   }
   return bin;
 }
 
-interface Component {
+interface BoundaryPixel {
+  x: number;
+  y: number;
+}
+
+interface ComponentPixels {
   pixels: Array<{ x: number; y: number }>;
   minX: number;
   maxX: number;
@@ -55,239 +74,197 @@ interface Component {
   maxY: number;
 }
 
-function connectedComponents(bin: Uint8Array, width: number, height: number): Component[] {
+function connectedComponents(bin: Uint8Array, width: number, height: number): ComponentPixels[] {
   const labels = new Int32Array(bin.length);
   labels.fill(0);
   let nextLabel = 1;
-  const equivalences: number[] = [0];
+  const equiv: number[] = [0];
 
-  function getLabel(x: number, y: number): number {
+  function gl(x: number, y: number) {
     if (x < 0 || x >= width || y < 0 || y >= height) return 0;
     return labels[y * width + x];
   }
 
-  function setLabel(x: number, y: number, l: number) {
+  function sl(x: number, y: number, l: number) {
     labels[y * width + x] = l;
   }
 
-  // First pass
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      if (bin[idx] === 0) continue;
-
-      const left = getLabel(x - 1, y);
-      const top = getLabel(x, y - 1);
-
+      if (bin[y * width + x] === 0) continue;
+      const left = gl(x - 1, y);
+      const top = gl(x, y - 1);
       if (left === 0 && top === 0) {
-        setLabel(x, y, nextLabel);
-        equivalences.push(nextLabel);
+        sl(x, y, nextLabel);
+        equiv.push(nextLabel);
         nextLabel++;
       } else if (left !== 0 && top === 0) {
-        setLabel(x, y, left);
+        sl(x, y, left);
       } else if (left === 0 && top !== 0) {
-        setLabel(x, y, top);
+        sl(x, y, top);
       } else {
-        // Both have labels - union
-        const min = Math.min(left, top);
-        const max = Math.max(left, top);
-        setLabel(x, y, min);
-        equivalences[max] = min;
+        const mn = Math.min(left, top);
+        const mx = Math.max(left, top);
+        sl(x, y, mn);
+        equiv[mx] = mn;
       }
     }
   }
 
-  // Resolve equivalences (simple path compression)
-  for (let i = 1; i < equivalences.length; i++) {
-    let root = i;
-    while (equivalences[root] !== root) {
-      equivalences[root] = equivalences[equivalences[root]];
-      root = equivalences[root];
-    }
-    equivalences[i] = root;
+  for (let i = 1; i < equiv.length; i++) {
+    let r = i;
+    while (equiv[r] !== r) { equiv[r] = equiv[equiv[r]]; r = equiv[r]; }
+    equiv[i] = r;
   }
 
-  // Second pass and component collection
-  const compMap = new Map<number, Component>();
-
+  const map = new Map<number, ComponentPixels>();
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      const idx = y * width + x;
-      if (bin[idx] === 0) continue;
-      const label = equivalences[labels[idx]];
-
-      if (!compMap.has(label)) {
-        compMap.set(label, {
-          pixels: [],
-          minX: x,
-          maxX: x,
-          minY: y,
-          maxY: y,
-        });
+      if (bin[y * width + x] === 0) continue;
+      const label = equiv[labels[y * width + x]];
+      let c = map.get(label);
+      if (!c) {
+        c = { pixels: [], minX: x, maxX: x, minY: y, maxY: y };
+        map.set(label, c);
       }
-      const comp = compMap.get(label)!;
-      comp.pixels.push({ x, y });
-      comp.minX = Math.min(comp.minX, x);
-      comp.maxX = Math.max(comp.maxX, x);
-      comp.minY = Math.min(comp.minY, y);
-      comp.maxY = Math.max(comp.maxY, y);
+      c.pixels.push({ x, y });
+      if (x < c.minX) c.minX = x;
+      if (x > c.maxX) c.maxX = x;
+      if (y < c.minY) c.minY = y;
+      if (y > c.maxY) c.maxY = y;
     }
   }
 
-  const result: Component[] = [];
-  compMap.forEach((comp) => {
-    if (comp.pixels.length < 50) return; // filter noise
-    result.push(comp);
+  const out: ComponentPixels[] = [];
+  map.forEach((c) => {
+    if (c.pixels.length < 80) return;
+    out.push(c);
   });
-  return result;
+  return out;
 }
 
-function traceContour(bin: Uint8Array, width: number, height: number, startX: number, startY: number): Array<{ x: number; y: number }> {
-  // Moore-Neighbor tracing
-  const contour: Array<{ x: number; y: number }> = [];
-  const dirs = [
-    [1, 0], [1, -1], [0, -1], [-1, -1],
-    [-1, 0], [-1, 1], [0, 1], [1, 1],
-  ];
-
-  let cx = startX;
-  let cy = startY;
-  let startDir = 0;
-  const visited = new Set<string>();
-
-  do {
-    contour.push({ x: cx, y: cy });
-    visited.add(`${cx},${cy}`);
-
-    let found = false;
-    for (let d = 0; d < 8; d++) {
-      const dirIdx = (startDir + d) % 8;
-      const nx = cx + dirs[dirIdx][0];
-      const ny = cy + dirs[dirIdx][1];
-      if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
-        const key = `${nx},${ny}`;
-        if (bin[ny * width + nx] !== 0 && !visited.has(key)) {
-          cx = nx;
-          cy = ny;
-          startDir = (dirIdx + 6) % 8;
-          found = true;
-          break;
-        }
-      }
+function extractBoundary(bin: Uint8Array, width: number, height: number, comp: ComponentPixels): BoundaryPixel[] {
+  const boundary: BoundaryPixel[] = [];
+  for (const { x, y } of comp.pixels) {
+    if (y === 0 || y === height - 1 || x === 0 || x === width - 1 ||
+      bin[(y - 1) * width + x] === 0 || bin[(y + 1) * width + x] === 0 ||
+      bin[y * width + (x - 1)] === 0 || bin[y * width + (x + 1)] === 0) {
+      boundary.push({ x, y });
     }
+  }
+  return boundary;
+}
 
-    if (!found) break;
-    if (contour.length > 20000) break; // safety limit
-  } while (cx !== startX || cy !== startY);
+function centroid(points: BoundaryPixel[]): { cx: number; cy: number } {
+  let sx = 0, sy = 0;
+  for (const p of points) { sx += p.x; sy += p.y; }
+  return { cx: sx / points.length, cy: sy / points.length };
+}
 
-  return contour;
+function sortBoundaryByAngle(points: BoundaryPixel[], cx: number, cy: number): BoundaryPixel[] {
+  const copy = [...points];
+  copy.sort((a, b) => {
+    const ta = Math.atan2(a.y - cy, a.x - cx);
+    const tb = Math.atan2(b.y - cy, b.x - cx);
+    return ta - tb;
+  });
+  return copy;
 }
 
 function pointToLineDist(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
+  const dx = x2 - x1, dy = y2 - y1;
   const len = Math.sqrt(dx * dx + dy * dy);
   if (len === 0) return Math.sqrt((px - x1) ** 2 + (py - y1) ** 2);
   const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / (len * len)));
-  const projX = x1 + t * dx;
-  const projY = y1 + t * dy;
-  return Math.sqrt((px - projX) ** 2 + (py - projY) ** 2);
+  return Math.sqrt((px - (x1 + t * dx)) ** 2 + (py - (y1 + t * dy)) ** 2);
 }
 
-function rdpSimplify(points: Array<{ x: number; y: number }>, epsilon: number): Array<{ x: number; y: number }> {
+function rdpSimplify(points: BoundaryPixel[], epsilon: number): BoundaryPixel[] {
   if (points.length <= 2) return points;
-
-  let maxDist = 0;
-  let maxIdx = 0;
-  const first = points[0];
-  const last = points[points.length - 1];
-
+  let maxDist = 0, maxIdx = 0;
+  const first = points[0], last = points[points.length - 1];
   for (let i = 1; i < points.length - 1; i++) {
     const d = pointToLineDist(points[i].x, points[i].y, first.x, first.y, last.x, last.y);
-    if (d > maxDist) {
-      maxDist = d;
-      maxIdx = i;
-    }
+    if (d > maxDist) { maxDist = d; maxIdx = i; }
   }
-
   if (maxDist > epsilon) {
     const left = rdpSimplify(points.slice(0, maxIdx + 1), epsilon);
     const right = rdpSimplify(points.slice(maxIdx), epsilon);
     return [...left.slice(0, -1), ...right];
-  } else {
-    return [first, last];
   }
+  return [first, last];
 }
 
-function classifyShape(contour: Array<{ x: number; y: number }>, component: Component): DetectedShape {
-  const area = component.pixels.length;
-  const w = component.maxX - component.minX + 1;
-  const h = component.maxY - component.minY + 1;
+function deduplicateVertices(points: BoundaryPixel[], minDist: number): BoundaryPixel[] {
+  if (points.length <= 1) return points;
+  const result: BoundaryPixel[] = [points[0]];
+  for (let i = 1; i < points.length; i++) {
+    const last = result[result.length - 1];
+    const dx = points[i].x - last.x, dy = points[i].y - last.y;
+    if (Math.sqrt(dx * dx + dy * dy) > minDist) result.push(points[i]);
+  }
+  const first = result[0], last = result[result.length - 1];
+  const dx = last.x - first.x, dy = last.y - first.y;
+  if (result.length > 2 && Math.sqrt(dx * dx + dy * dy) <= minDist) result.pop();
+  return result;
+}
 
-  // Perimeter from contour
+function classifyShape(boundary: BoundaryPixel[], comp: ComponentPixels): DetectedShape {
+  const area = comp.pixels.length;
+  const w = comp.maxX - comp.minX + 1;
+  const h = comp.maxY - comp.minY + 1;
+
+  // Perimeter from boundary
+  const sorted = sortBoundaryByAngle(boundary, centroid(boundary).cx, centroid(boundary).cy);
   let perimeter = 0;
-  for (let i = 0; i < contour.length; i++) {
-    const a = contour[i];
-    const b = contour[(i + 1) % contour.length];
+  for (let i = 0; i < sorted.length; i++) {
+    const a = sorted[i], b = sorted[(i + 1) % sorted.length];
     perimeter += Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
   }
 
-  // Circularity: 4π * area / perimeter²
-  const circularity = (4 * Math.PI * area) / (perimeter * perimeter);
+  // Circularity
+  const circularity = perimeter > 0 ? (4 * Math.PI * area) / (perimeter * perimeter) : 0;
 
   const center = {
-    x: Math.round((component.minX + component.maxX) / 2),
-    y: Math.round((component.minY + component.maxY) / 2),
+    x: Math.round((comp.minX + comp.maxX) / 2),
+    y: Math.round((comp.minY + comp.maxY) / 2),
   };
+  const boundingBox = { x: comp.minX, y: comp.minY, width: w, height: h };
 
-  const boundingBox = { x: component.minX, y: component.minY, width: w, height: h };
-
-  // Circle: circularity > 0.7
-  if (circularity > 0.7) {
+  // Strong circle candidate
+  if (circularity > 0.75) {
     return { kind: "circle", area, boundingBox, center };
   }
 
-  // For polygons, simplify the contour
-  const simplified = rdpSimplify(contour, 2);
-  let vertexCount = simplified.length;
-
-  // Deduplicate near-identical vertices
-  if (vertexCount > 2) {
-    const deduped: Array<{ x: number; y: number }> = [simplified[0]];
-    for (let i = 1; i < simplified.length; i++) {
-      const last = deduped[deduped.length - 1];
-      const dx = simplified[i].x - last.x;
-      const dy = simplified[i].y - last.y;
-      if (Math.sqrt(dx * dx + dy * dy) > 5) {
-        deduped.push(simplified[i]);
-      }
-    }
-    // Check if first and last are same point
-    const first = deduped[0];
-    const last = deduped[deduped.length - 1];
-    const dx = last.x - first.x;
-    const dy = last.y - first.y;
-    if (Math.sqrt(dx * dx + dy * dy) <= 5 && deduped.length > 2) {
-      deduped.pop();
-    }
-    vertexCount = deduped.length;
-  }
+  // Simplify boundary to find vertices
+  const epsilon = Math.max(3, (w + h) / 40);
+  const simplified = rdpSimplify(sorted, epsilon);
+  const vertices = deduplicateVertices(simplified, Math.max(5, (w + h) / 20));
+  const vertexCount = vertices.length;
 
   const aspectRatio = w / h;
-  const isSquare = aspectRatio >= 0.8 && aspectRatio <= 1.25;
+  const isSquareish = aspectRatio >= 0.75 && aspectRatio <= 1.35;
 
-  if (vertexCount === 3) {
+  if (vertexCount <= 3) {
     return { kind: "triangle", area, boundingBox, center };
-  } else if (vertexCount === 4) {
-    if (isSquare) {
-      return { kind: "square", area, boundingBox, center };
-    } else {
-      return { kind: "rectangle", area, boundingBox, center };
-    }
-  } else if (vertexCount <= 6) {
-    if (isSquare) {
-      return { kind: "square", area, boundingBox, center };
-    }
+  }
+
+  if (vertexCount <= 5) {
+    if (isSquareish) return { kind: "square", area, boundingBox, center };
+    return { kind: "rectangle", area, boundingBox, center };
+  }
+
+  if (vertexCount <= 7) {
+    // Could be a rounded polygon — check aspect ratio
+    if (isSquareish) return { kind: "square", area, boundingBox, center };
+    return { kind: "rectangle", area, boundingBox, center };
+  }
+
+  // Many vertices — check if still basically a rectangle/square
+  const hullArea = w * h;
+  const fillRatio = area / hullArea;
+  if (fillRatio > 0.7) {
+    if (isSquareish) return { kind: "square", area, boundingBox, center };
     return { kind: "rectangle", area, boundingBox, center };
   }
 
@@ -309,55 +286,35 @@ export interface RuleResult {
 export function parseRules(text: string): Rule[] {
   const lines = text.split("\n").filter((l) => l.trim());
   const rules: Rule[] = [];
-
   const shapeMap: Record<string, ShapeKind> = {
-    circle: "circle",
-    circles: "circle",
-    square: "square",
-    squares: "square",
-    rectangle: "rectangle",
-    rectangles: "rectangle",
-    triangle: "triangle",
-    triangles: "triangle",
+    circle: "circle", circles: "circle",
+    square: "square", squares: "square",
+    rectangle: "rectangle", rectangles: "rectangle",
+    triangle: "triangle", triangles: "triangle",
   };
-
   for (const line of lines) {
-    const lower = line.toLowerCase().trim();
-    const match = lower.match(/(\d+)\s+(circle|circles|square|squares|rectangle|rectangles|triangle|triangles)/);
-    if (match) {
-      const count = parseInt(match[1], 10);
-      const kind = shapeMap[match[2]];
-      if (kind && count > 0) {
-        rules.push({ kind, count });
-      }
+    const m = line.toLowerCase().trim().match(/(\d+)\s+(circle|circles|square|squares|rectangle|rectangles|triangle|triangles)/);
+    if (m) {
+      const count = parseInt(m[1], 10);
+      const kind = shapeMap[m[2]];
+      if (kind && count > 0) rules.push({ kind, count });
     }
   }
-
   return rules;
 }
 
 export function detectShapes(imageData: ImageData): DetectedShape[] {
   const { width, height, data } = imageData;
-
-  // Preprocessing pipeline
   const gray = grayscale(data);
-  const blurred = gaussianBlur(gray, width, height);
-  const bin = threshold(blurred, 128);
+  const bin = threshold(gray);
 
-  // Find connected components
   const components = connectedComponents(bin, width, height);
-
-  // For each component, trace contour and classify
   const shapes: DetectedShape[] = [];
 
   for (const comp of components) {
-    const startX = comp.minX + Math.floor((comp.maxX - comp.minX) / 2);
-    const startY = comp.minY + Math.floor((comp.maxY - comp.minY) / 2);
-    const contour = traceContour(bin, width, height, startX, startY);
-
-    if (contour.length < 20) continue;
-
-    const shape = classifyShape(contour, comp);
+    const boundary = extractBoundary(bin, width, height, comp);
+    if (boundary.length < 30) continue;
+    const shape = classifyShape(boundary, comp);
     shapes.push(shape);
   }
 

@@ -1,12 +1,12 @@
 import { useRef, useState } from "react";
 import { detectShapes, parseRules, validateRules, type DetectedShape, type RuleResult, type ShapeKind } from "../utils/shapeDetection";
 
-const SHAPE_LABELS: Record<ShapeKind, string> = {
-  circle: "🟢 Circle",
-  square: "🟦 Square",
-  rectangle: "📐 Rectangle",
-  triangle: "🔺 Triangle",
-  unknown: "❓ Unknown",
+const SHAPE_COLORS: Record<string, string> = {
+  circle: "#22c55e",
+  square: "#3b82f6",
+  rectangle: "#f59e0b",
+  triangle: "#ef4444",
+  unknown: "#6b7280",
 };
 
 export default function ImageValidator() {
@@ -16,6 +16,7 @@ export default function ImageValidator() {
   const [results, setResults] = useState<RuleResult[] | null>(null);
   const [shapes, setShapes] = useState<DetectedShape[]>([]);
   const [error, setError] = useState("");
+  const [minArea, setMinArea] = useState(200);
 
   const handleImage = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -49,18 +50,19 @@ export default function ImageValidator() {
       ctx.drawImage(img, 0, 0);
 
       const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const detected = detectShapes(imageData);
-      setShapes(detected);
+      const allShapes = detectShapes(imageData);
+      const filtered = allShapes.filter((s) => s.area >= minArea);
+      setShapes(filtered);
 
       // Draw annotations
-      ctx.strokeStyle = "#00ff00";
-      ctx.lineWidth = 2;
-      for (const s of detected) {
+      for (const s of filtered) {
         const { x, y, width, height } = s.boundingBox;
+        ctx.strokeStyle = SHAPE_COLORS[s.kind] || "#00ff00";
+        ctx.lineWidth = 2;
         ctx.strokeRect(x, y, width, height);
-        ctx.fillStyle = "#00ff00";
-        ctx.font = "14px monospace";
-        ctx.fillText(s.kind, x, y - 4);
+        ctx.fillStyle = SHAPE_COLORS[s.kind] || "#00ff00";
+        ctx.font = "bold 14px monospace";
+        ctx.fillText(`${s.kind} (${s.area}px)`, x, y - 4);
       }
 
       const rules = parseRules(rulesText);
@@ -103,6 +105,18 @@ export default function ImageValidator() {
               rows={4}
               value={rulesText}
               onChange={(e) => setRulesText(e.target.value)}
+            />
+          </div>
+
+          <div className="compose-field">
+            <label>Min shape area (px): {minArea}</label>
+            <input
+              type="range"
+              min={50}
+              max={5000}
+              step={50}
+              value={minArea}
+              onChange={(e) => setMinArea(Number(e.target.value))}
             />
           </div>
 
