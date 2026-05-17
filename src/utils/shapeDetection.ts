@@ -292,14 +292,51 @@ export function parseRules(text: string): Rule[] {
     rectangle: "rectangle", rectangles: "rectangle",
     triangle: "triangle", triangles: "triangle",
   };
+
   for (const line of lines) {
-    const m = line.toLowerCase().trim().match(/(\d+)\s+(circle|circles|square|squares|rectangle|rectangles|triangle|triangles)/);
-    if (m) {
-      const count = parseInt(m[1], 10);
-      const kind = shapeMap[m[2]];
-      if (kind && count > 0) rules.push({ kind, count });
+    const clean = line.toLowerCase().trim();
+
+    // Match patterns like:
+    // "2 circles", "1 square"
+    // "there should be 2 circles"
+    // "at least 1 square"
+    // "exactly 3 triangles"
+    // "circle should be 2"
+    // "2 circle"
+    let num: number | null = null;
+    let shape: string | null = null;
+
+    // Try "N shape" pattern (most common)
+    const m1 = clean.match(/(\d+)\s+(circle|circles|square|squares|rectangle|rectangles|triangle|triangles)/);
+    if (m1) { num = parseInt(m1[1]); shape = m1[2]; }
+
+    // Try "shape N" pattern ("circle should be 2")
+    if (!num) {
+      const m2 = clean.match(/(circle|circles|square|squares|rectangle|rectangles|triangle|triangles).*?(\d+)/);
+      if (m2) { shape = m2[1]; num = parseInt(m2[2]); }
+    }
+
+    // Try word numbers: "two circles", "one square"
+    if (!num) {
+      const wordNums: Record<string, number> = {
+        one: 1, two: 2, three: 3, four: 4, five: 5,
+        six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+      };
+      for (const [word, n] of Object.entries(wordNums)) {
+        if (clean.includes(word)) { num = n; break; }
+      }
+      if (num) {
+        const m3 = clean.match(/(circle|circles|square|squares|rectangle|rectangles|triangle|triangles)/);
+        if (m3) shape = m3[1];
+      }
+    }
+
+    if (num && shape) {
+      const kind = shapeMap[shape];
+      if (kind && num > 0) rules.push({ kind, count: num });
     }
   }
+
   return rules;
 }
 
@@ -316,6 +353,12 @@ export function detectShapes(imageData: ImageData): DetectedShape[] {
     if (boundary.length < 30) continue;
     const shape = classifyShape(boundary, comp);
     shapes.push(shape);
+  }
+
+  // Auto-filter: drop shapes smaller than 0.5% of the largest shape's area
+  const maxArea = shapes.reduce((m, s) => Math.max(m, s.area), 0);
+  if (maxArea > 0) {
+    return shapes.filter((s) => s.area >= maxArea * 0.005);
   }
 
   return shapes;

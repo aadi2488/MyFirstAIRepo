@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import { detectShapes, parseRules, validateRules, type DetectedShape, type RuleResult, type ShapeKind } from "../utils/shapeDetection";
 
 const SHAPE_COLORS: Record<string, string> = {
@@ -6,154 +6,193 @@ const SHAPE_COLORS: Record<string, string> = {
   square: "#3b82f6",
   rectangle: "#f59e0b",
   triangle: "#ef4444",
-  unknown: "#6b7280",
+  unknown: "#9ca3af",
 };
+
+const SHAPE_ICONS: Record<string, string> = {
+  circle: "⬤",
+  square: "■",
+  rectangle: "▬",
+  triangle: "▲",
+  unknown: "?",
+};
+
+const DEFAULT_RULES = `1 circle
+2 squares
+1 triangle`;
 
 export default function ImageValidator() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [rulesText, setRulesText] = useState("");
+  const [rulesText, setRulesText] = useState(DEFAULT_RULES);
   const [results, setResults] = useState<RuleResult[] | null>(null);
   const [shapes, setShapes] = useState<DetectedShape[]>([]);
-  const [error, setError] = useState("");
-  const [minArea, setMinArea] = useState(200);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [summary, setSummary] = useState<string>("");
+
+  const runAnalysis = (url: string) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    setAnalyzing(true);
+    setResults(null);
+
+    const img = new Image();
+    img.onload = () => {
+      // Scale down large images for performance
+      const maxDim = 1200;
+      let w = img.width;
+      let h = img.height;
+      if (w > maxDim || h > maxDim) {
+        const scale = Math.min(maxDim / w, maxDim / h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+
+      canvas.width = w;
+      canvas.height = h;
+      ctx.drawImage(img, 0, 0, w, h);
+
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const detected = detectShapes(imageData);
+      setShapes(detected);
+
+      // Draw annotations
+      for (const s of detected) {
+        const { x, y, width, height } = s.boundingBox;
+        ctx.strokeStyle = SHAPE_COLORS[s.kind] || "#00ff00";
+        ctx.lineWidth = Math.max(2, Math.round(Math.min(w, h) / 200));
+        ctx.strokeRect(x, y, width, height);
+        ctx.fillStyle = SHAPE_COLORS[s.kind] || "#00ff00";
+        ctx.font = `bold ${Math.max(11, Math.round(Math.min(w, h) / 60))}px monospace`;
+        ctx.fillText(s.kind, x + 2, y - 4);
+      }
+
+      // Build summary
+      if (detected.length === 0) {
+        setSummary("No shapes detected. Try an image with clear shapes on a plain background.");
+      } else {
+        const counts: Record<string, number> = {};
+        for (const s of detected) {
+          counts[s.kind] = (counts[s.kind] || 0) + 1;
+        }
+        const parts = Object.entries(counts).map(
+          ([k, c]) => `${c} ${k}${c > 1 ? "s" : ""}`
+        );
+        const last = parts.pop();
+        setSummary(`Found ${detected.length} shape${detected.length > 1 ? "s" : ""}: ${parts.length ? parts.join(", ") + " and " : ""}${last}.`);
+      }
+
+      setAnalyzing(false);
+    };
+    img.src = url;
+  };
 
   const handleImage = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setResults(null);
     setShapes([]);
-    setError("");
 
     const reader = new FileReader();
     reader.onload = () => {
-      setImageUrl(reader.result as string);
+      const url = reader.result as string;
+      setImageUrl(url);
+      runAnalysis(url);
     };
     reader.readAsDataURL(file);
   };
 
   const handleValidate = () => {
-    if (!imageUrl) return;
-    setError("");
+    if (shapes.length === 0) return;
 
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const rules = parseRules(rulesText);
 
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+    if (rules.length === 0) {
+      // Instead of error, show guidance
+      setResults([
+        {
+          rule: { kind: "circle", count: 0 },
+          passed: false,
+          detected: 0,
+          message: 'Could not understand your rules. Try "1 circle", "2 squares", or "at least 1 triangle".',
+        },
+      ]);
+      return;
+    }
 
-    const img = new Image();
-    img.onload = () => {
-      canvas.width = img.width;
-      canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const allShapes = detectShapes(imageData);
-      const filtered = allShapes.filter((s) => s.area >= minArea);
-      setShapes(filtered);
-
-      // Draw annotations
-      for (const s of filtered) {
-        const { x, y, width, height } = s.boundingBox;
-        ctx.strokeStyle = SHAPE_COLORS[s.kind] || "#00ff00";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x, y, width, height);
-        ctx.fillStyle = SHAPE_COLORS[s.kind] || "#00ff00";
-        ctx.font = "bold 14px monospace";
-        ctx.fillText(`${s.kind} (${s.area}px)`, x, y - 4);
-      }
-
-      const rules = parseRules(rulesText);
-
-      if (rules.length === 0) {
-        setError("No valid rules found. Use format like \"1 circle\", \"2 squares\".");
-        return;
-      }
-
-      const ruleResults = validateRules(detected, rules);
-      setResults(ruleResults);
-    };
-
-    img.src = imageUrl;
+    const ruleResults = validateRules(shapes, rules);
+    setResults(ruleResults);
   };
+
+  const overallPass = results && results.filter((r) => !r.passed).length === 0;
+  const overallFail = results && results.filter((r) => !r.passed).length > 0;
 
   return (
     <div>
       <h1>Image Shape Validator</h1>
 
       <div className="validator-layout">
-        <div className="validator-inputs card">
-          <h2>Upload & Rules</h2>
-
+        {/* Left panel: upload + rules */}
+        <div className="validator-side card">
+          <h2>1. Upload Image</h2>
           <div className="compose-field">
-            <label>Image</label>
             <input type="file" accept="image/*" onChange={handleImage} />
           </div>
 
-          {imageUrl && (
-            <div className="preview-wrap">
-              <img src={imageUrl} className="preview-img" alt="Uploaded" />
+          {!imageUrl && (
+            <div className="upload-hint">
+              <div className="upload-icon">🖼️</div>
+              <p>Upload an image with circles, squares, rectangles, or triangles</p>
             </div>
           )}
 
+          <h2 style={{ marginTop: "1.5rem" }}>2. Define Rules</h2>
           <div className="compose-field">
-            <label>Rules (one per line)</label>
             <textarea
-              placeholder={`1 circle\n2 squares\n1 triangle`}
               rows={4}
               value={rulesText}
               onChange={(e) => setRulesText(e.target.value)}
             />
-          </div>
-
-          <div className="compose-field">
-            <label>Min shape area (px): {minArea}</label>
-            <input
-              type="range"
-              min={50}
-              max={5000}
-              step={50}
-              value={minArea}
-              onChange={(e) => setMinArea(Number(e.target.value))}
-            />
+            <p className="hint" style={{ textAlign: "left", marginTop: "0.375rem" }}>
+              Examples: "1 circle", "2 squares", "at least 1 triangle", "three rectangles"
+            </p>
           </div>
 
           <button
             className="send-btn"
             onClick={handleValidate}
-            disabled={!imageUrl}
+            disabled={shapes.length === 0 || analyzing}
           >
-            Validate Shapes
+            {analyzing ? "Analyzing..." : "3. Validate Rules"}
           </button>
-
-          {error && <p className="error">{error}</p>}
         </div>
 
+        {/* Right panel: canvas + results */}
         <div className="validator-results">
-          {imageUrl && (
-            <div className="card">
-              <h2>Analysis</h2>
+          {/* Analysis canvas */}
+          <div className="card">
+            <h2>
+              Analysis
+              {analyzing && <span className="analyzing-badge"> Analyzing...</span>}
+            </h2>
+            {imageUrl ? (
               <canvas ref={canvasRef} className="analysis-canvas" />
-            </div>
-          )}
-
-          {results && (
-            <div className="card results-card">
-              <h2>Results</h2>
-              <div className="results-list">
-                {results.map((r, i) => (
-                  <div key={i} className={`result-item ${r.passed ? "pass" : "fail"}`}>
-                    {r.message}
-                  </div>
-                ))}
+            ) : (
+              <div className="canvas-placeholder">
+                <p>Your annotated image will appear here</p>
               </div>
+            )}
+          </div>
 
-              <h3 style={{ marginTop: "1rem", marginBottom: "0.5rem" }}>Detected Shapes</h3>
-              {shapes.length === 0 ? (
-                <p className="empty-state">No shapes detected.</p>
-              ) : (
+          {/* Summary */}
+          {summary && (
+            <div className="card">
+              <h2>Detected Shapes</h2>
+              <p className="summary-text">{summary}</p>
+              {shapes.length > 0 && (
                 <div className="shapes-summary">
                   {Object.entries(
                     shapes.reduce<Record<string, number>>((acc, s) => {
@@ -161,12 +200,29 @@ export default function ImageValidator() {
                       return acc;
                     }, {})
                   ).map(([kind, count]) => (
-                    <span key={kind} className="shape-badge">
-                      {SHAPE_LABELS[kind as ShapeKind] || kind}: {count}
+                    <span key={kind} className="shape-badge" style={{ borderLeftColor: SHAPE_COLORS[kind] || "#9ca3af" }}>
+                      {SHAPE_ICONS[kind] || "?"} {kind}: {count}
                     </span>
                   ))}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* Validation results */}
+          {results && (
+            <div className={`card results-card ${overallPass ? "result-pass" : ""} ${overallFail ? "result-fail" : ""}`}>
+              <h2>
+                Validation Results
+                {overallPass && <span className="verdict pass">✓ All passed</span>}
+                {overallFail && <span className="verdict fail">✗ Failed</span>}
+              </h2>
+
+              {results.map((r, i) => (
+                <div key={i} className={`result-item ${r.passed ? "pass" : "fail"}`}>
+                  {r.message}
+                </div>
+              ))}
             </div>
           )}
         </div>
